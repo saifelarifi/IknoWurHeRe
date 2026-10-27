@@ -335,4 +335,9 @@ def create_dashboard_app(
         )
         report = f"""<!doctype html><html><head><meta charset="utf-8"><title>IknoWurHeRe report</title></head>
 <body style="font:14px system-ui;background:#070b12;color:#e8f7ff;padding:24px">
-<h1 style="color:#00eaff">IknoWurHeRe security report</h1><p>Network: {html.escape(network)} · Generated
+<h1 style="color:#00eaff">IknoWurHeRe security report</h1><p>Network: {html.escape(network)} · Generated: {html.escape(datetime.now(timezone.utc).isoformat())}</p>
+<h2>Device inventory ({len(devices)})</h2><table style="border-collapse:collapse;width:100%"><thead><tr><th>Status</th><th>IP</th><th>MAC</th><th>Vendor</th><th>Hostname</th><th>Source</th><th>First seen</th><th>Last seen</th></tr></thead><tbody>{device_rows}</tbody></table>
+<h2>Alerts ({len(alerts)})</h2><table style="border-collapse:collapse;width:100%"><thead><tr><th>When</th><th>Type</th><th>Confidence</th><th>Address</th><th>Reason</th><th>State</th></tr></thead><tbody>{alert_rows}</tbody></table></body></html>"""
+        return HTMLResponse(report, headers={"Content-Disposition": 'attachment; filename="iknowurhere-report.html"'})
+
+    return app
