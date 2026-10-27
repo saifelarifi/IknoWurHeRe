@@ -1,0 +1,32 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and packaging output
+.venv/
+venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Local scan reports
+report.json
+report.csv
+*.report.json
+*.report.csv
+reports/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

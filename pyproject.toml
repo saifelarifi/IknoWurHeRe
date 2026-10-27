@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "IknoWurHeRe"
+version = "0.1.0"
+description = "Async local network device discovery with ping and ARP"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["rich>=13.7", "scapy>=2.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+iknowurhere = "iknowurhere.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iknowurhere"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
