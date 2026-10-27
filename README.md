@@ -13,7 +13,9 @@
 
 **IknoWurHeRe** is a defensive local-network inventory and change-monitoring tool. It discovers devices with ICMP ping and ARP, stores sightings in SQLite, detects infrastructure changes, and provides a Rich CLI plus a local web dashboard.
 
-> **Repository screenshots:** add reviewed screenshots under [`docs/screenshots/`](docs/screenshots/). Replace the preview placeholders below with image links before publishing screenshots. The preview should show the dashboard's black background with neon pink and cyan accents; blur or remove real IP, MAC, hostname, and token data first.
+## Screenshots / UI Preview
+
+The screenshots directory is [`docs/screenshots/`](docs/screenshots/). Add sanitized desktop and mobile captures there, then enable the image links below. The dashboard preview should show its black background with neon pink and cyan accents. Blur or remove real IP, MAC, hostname, and access-token data before committing images.
 
 <!-- Screenshot placeholder: save a sanitized dashboard image as docs/screenshots/dashboard.png, then enable the next line.
 ![IknoWurHeRe cyberpunk dashboard](docs/screenshots/dashboard.png)
