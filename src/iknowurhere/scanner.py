@@ -21,6 +21,7 @@ class Device:
     hostname: str | None
     source: str
     status: str = "online"
+    vendor: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +53,7 @@ async def _ping(ip: str, semaphore: asyncio.Semaphore, timeout: float) -> bool:
         cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout * 1000))), ip]
     else:
         cmd = ["ping", "-c", "1", "-W", str(max(1, int(timeout))), ip]
+    proc = None
     async with semaphore:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -59,12 +61,36 @@ async def _ping(ip: str, semaphore: asyncio.Semaphore, timeout: float) -> bool:
             )
             return await asyncio.wait_for(proc.wait(), timeout=timeout + 1) == 0
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
             return False
 
 
-def _arp_sweep_sync(network: str, timeout: float) -> dict[str, str]:
+def validate_interface(interface: str | None) -> str | None:
+    """Validate an explicitly selected Scapy network interface."""
+    if interface is None:
+        return None
+    value = interface.strip()
+    if not value:
+        raise ValueError("Network interface cannot be empty")
+    try:
+        from scapy.all import get_if_list
+        interfaces = {str(item) for item in get_if_list()}
+    except Exception as exc:
+        try:
+            interfaces = {str(name) for _index, name in socket.if_nameindex()}
+        except (AttributeError, OSError) as fallback_exc:
+            raise ValueError(
+                f"Could not enumerate interfaces through Scapy ({exc}) or the operating system ({fallback_exc})"
+            ) from fallback_exc
+    if value not in interfaces:
+        visible = ", ".join(sorted(interfaces)) or "none detected"
+        raise ValueError(f"Unknown network interface {value!r}. Available interfaces: {visible}")
+    return value
+
+
+def _arp_sweep_sync(network: str, timeout: float, interface: str | None = None) -> dict[str, str]:
     """Send layer-2 ARP requests with Scapy. Requires raw-socket privileges."""
     try:
         from scapy.all import ARP, Ether, srp
@@ -72,7 +98,10 @@ def _arp_sweep_sync(network: str, timeout: float) -> dict[str, str]:
     except ImportError as exc:
         raise RuntimeError("Scapy is missing. Reinstall IknoWurHeRe with its project dependencies.") from exc
     try:
-        answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network), timeout=timeout, retry=0, verbose=0)
+        options = {"timeout": timeout, "retry": 0, "verbose": 0}
+        if interface:
+            options["iface"] = interface
+        answered, _ = srp(Ether(dst="ff:ff:ff:ff:ff:ff") / ARP(pdst=network), **options)
     except (OSError, PermissionError, Scapy_Exception) as exc:
         raise RuntimeError(
             "Active ARP needs permission to use raw network sockets. On Linux, run with sudo or grant the "
@@ -81,8 +110,8 @@ def _arp_sweep_sync(network: str, timeout: float) -> dict[str, str]:
     return {str(received.psrc): str(received.hwsrc).lower() for _, received in answered}
 
 
-async def _arp_sweep(network: str, timeout: float) -> dict[str, str]:
-    return await asyncio.to_thread(_arp_sweep_sync, network, timeout)
+async def _arp_sweep(network: str, timeout: float, interface: str | None = None) -> dict[str, str]:
+    return await asyncio.to_thread(_arp_sweep_sync, network, timeout, interface)
 
 
 async def _neighbor_table() -> dict[str, str]:
@@ -115,33 +144,82 @@ async def _hostname(ip: str) -> str | None:
         return None
 
 
-async def scan(network: str, *, concurrency: int = 64, timeout: float = 0.8) -> ScanResult:
+async def scan(
+    network: str, *, concurrency: int = 64, timeout: float = 0.8, interface: str | None = None
+) -> ScanResult:
     """Discover hosts with ICMP and active ARP; no ports are scanned.
 
     Use only on a network you own or are authorized to inventory. Active ARP
     may require elevated privileges; ping discovery remains available as fallback.
     """
     subnet = validate_network(network)
-    if shutil.which("ping") is None:
-        raise RuntimeError("The system 'ping' command was not found. Install ping (iputils on Linux) and try again.")
+    interface = validate_interface(interface)
+    if not 1 <= concurrency <= 256:
+        raise ValueError("Concurrency must be between 1 and 256")
+    if not 0.1 <= timeout <= 10:
+        raise ValueError("Timeout must be between 0.1 and 10 seconds")
 
     semaphore = asyncio.Semaphore(concurrency)
     hosts = [str(ip) for ip in subnet.hosts()]
-    ping_results = await asyncio.gather(*(_ping(ip, semaphore, timeout) for ip in hosts))
-    ping_active = {ip for ip, is_up in zip(hosts, ping_results) if is_up}
+    warnings: list[str] = []
+    ping_active: set[str] = set()
+    if shutil.which("ping") is None:
+        warnings.append("System ping command was not found; continuing with ARP discovery.")
+    else:
+        ping_results = await asyncio.gather(
+            *(_ping(ip, semaphore, timeout) for ip in hosts), return_exceptions=True
+        )
+        ping_errors: set[str] = set()
+        for ip, result in zip(hosts, ping_results):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, Exception):
+                ping_errors.add(f"{type(result).__name__}: {result}")
+            elif result:
+                ping_active.add(ip)
+        if ping_errors:
+            warnings.append("Some ping requests failed: " + "; ".join(sorted(ping_errors)))
 
-    warning = None
-    try:
-        arp_neighbors = await _arp_sweep(str(subnet), timeout)
-    except RuntimeError as exc:
-        arp_neighbors = {}
-        warning = str(exc)
+    arp_enabled = True
+    if interface:
+        try:
+            from scapy.all import get_if_addr
+
+            interface_ip = ipaddress.ip_address(get_if_addr(interface))
+            if not isinstance(interface_ip, ipaddress.IPv4Address) or interface_ip not in subnet:
+                warnings.append(
+                    f"Interface {interface!r} has no IPv4 address inside {subnet}; ARP discovery was skipped."
+                )
+                arp_enabled = False
+        except Exception as exc:
+            warnings.append(f"Could not verify IPv4 address on interface {interface!r}: {exc}; ARP discovery was skipped.")
+            arp_enabled = False
+    arp_neighbors: dict[str, str] = {}
+    if arp_enabled:
+        try:
+            if interface is None:
+                arp_neighbors = await _arp_sweep(str(subnet), timeout)
+            else:
+                arp_neighbors = await _arp_sweep(str(subnet), timeout, interface)
+        except Exception as exc:
+            warnings.append(f"ARP discovery unavailable: {exc}")
+    host_set = set(hosts)
+    arp_neighbors = {ip: mac for ip, mac in arp_neighbors.items() if ip in host_set}
     cached_neighbors = await _neighbor_table()
-    found_ips = ping_active | set(arp_neighbors)
+    cached_hosts = host_set & set(cached_neighbors)
+    found_ips = ping_active | set(arp_neighbors) | cached_hosts
     names = await asyncio.gather(*(_hostname(ip) for ip in found_ips))
     devices = []
     for ip, hostname in zip(found_ips, names):
-        source = "PING+ARP" if ip in ping_active and ip in arp_neighbors else "PING" if ip in ping_active else "ARP"
-        devices.append(Device(ip, arp_neighbors.get(ip) or cached_neighbors.get(ip), hostname, source))
+        source = (
+            "PING+ARP" if ip in ping_active and ip in arp_neighbors else
+            "PING" if ip in ping_active else
+            "ARP" if ip in arp_neighbors else "ARP_CACHE"
+        )
+        mac = arp_neighbors.get(ip) or cached_neighbors.get(ip)
+        from .oui import lookup_vendor
+
+        devices.append(Device(ip, mac, hostname, source, vendor=lookup_vendor(mac)))
     devices.sort(key=lambda device: ipaddress.ip_address(device.ip))
+    warning = " ".join(dict.fromkeys(warnings)) or None
     return ScanResult(devices, warning)

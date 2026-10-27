@@ -87,5 +87,80 @@ async def test_scan_continues_with_ping_when_arp_not_permitted(monkeypatch):
     monkeypatch.setattr("iknowurhere.scanner._neighbor_table", fake_neighbors)
     monkeypatch.setattr("iknowurhere.scanner._hostname", fake_hostname)
     result = await scan("192.168.1.0/30")
-    assert result.warning == "permission required"
+    assert result.warning == "ARP discovery unavailable: permission required"
     assert result.devices[0].source == "PING"
+
+
+@pytest.mark.asyncio
+async def test_scan_includes_neighbor_cache_hosts_even_if_ping_does_not_reply(monkeypatch):
+    async def fake_ping(ip, semaphore, timeout):
+        return False
+
+    async def fake_arp(network, timeout):
+        return {}
+
+    async def fake_neighbors():
+        return {"192.168.1.2": "aa:bb:cc:dd:ee:02", "192.168.2.2": "aa:bb:cc:dd:ee:22"}
+
+    async def fake_hostname(ip):
+        return None
+
+    monkeypatch.setattr("iknowurhere.scanner.shutil.which", lambda _: "/usr/bin/ping")
+    monkeypatch.setattr("iknowurhere.scanner._ping", fake_ping)
+    monkeypatch.setattr("iknowurhere.scanner._arp_sweep", fake_arp)
+    monkeypatch.setattr("iknowurhere.scanner._neighbor_table", fake_neighbors)
+    monkeypatch.setattr("iknowurhere.scanner._hostname", fake_hostname)
+    result = await scan("192.168.1.0/30")
+    assert len(result.devices) == 1
+    assert result.devices[0].ip == "192.168.1.2"
+    assert result.devices[0].source == "ARP_CACHE"
+
+
+@pytest.mark.asyncio
+async def test_scan_uses_arp_when_system_ping_is_missing(monkeypatch):
+    async def fake_arp(network, timeout):
+        return {"192.168.1.1": "aa:bb:cc:dd:ee:01"}
+
+    async def fake_neighbors():
+        return {}
+
+    async def fake_hostname(ip):
+        return None
+
+    monkeypatch.setattr("iknowurhere.scanner.shutil.which", lambda _: None)
+    monkeypatch.setattr("iknowurhere.scanner._arp_sweep", fake_arp)
+    monkeypatch.setattr("iknowurhere.scanner._neighbor_table", fake_neighbors)
+    monkeypatch.setattr("iknowurhere.scanner._hostname", fake_hostname)
+    result = await scan("192.168.1.0/30")
+    assert result.devices[0].ip == "192.168.1.1"
+    assert result.warning and "ping command was not found" in result.warning
+
+
+@pytest.mark.asyncio
+async def test_scan_reports_ping_runtime_errors_and_keeps_arp_results(monkeypatch):
+    async def broken_ping(ip, semaphore, timeout):
+        raise FileNotFoundError("ping executable disappeared")
+
+    async def fake_arp(network, timeout):
+        return {"192.168.1.2": "aa:bb:cc:dd:ee:02"}
+
+    async def fake_neighbors():
+        return {}
+
+    async def fake_hostname(ip):
+        return None
+
+    monkeypatch.setattr("iknowurhere.scanner.shutil.which", lambda _: "/usr/bin/ping")
+    monkeypatch.setattr("iknowurhere.scanner._ping", broken_ping)
+    monkeypatch.setattr("iknowurhere.scanner._arp_sweep", fake_arp)
+    monkeypatch.setattr("iknowurhere.scanner._neighbor_table", fake_neighbors)
+    monkeypatch.setattr("iknowurhere.scanner._hostname", fake_hostname)
+    result = await scan("192.168.1.0/30")
+    assert result.devices[0].ip == "192.168.1.2"
+    assert result.warning and "Some ping requests failed" in result.warning
+
+
+def test_interface_is_optional_for_route_selected_scans():
+    from iknowurhere.scanner import validate_interface
+
+    assert validate_interface(None) is None
